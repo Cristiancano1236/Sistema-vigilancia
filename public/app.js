@@ -1,1261 +1,1066 @@
 /**
- * ============================================================================
- * BETHA SENTINEL // CLIENT NEURAL ENGINE & DASHBOARD CONTROLLER (v2.1)
- * ============================================================================
+ * BETHA SENTINEL v3 — Panel de control.
+ * La IA corre en el servidor; aquí solo se muestra el vídeo, se dibujan las
+ * detecciones que llegan por WebSocket y se gestionan eventos y ajustes.
+ * Todo el texto dinámico se inserta con textContent (sin innerHTML con datos).
  */
+(function () {
+    'use strict';
 
-// Elementos DOM Principales
-const video = document.getElementById('videoElement');
-const rtspImageElement = document.getElementById('rtspImageElement');
-const overlayCanvas = document.getElementById('overlayCanvas');
-const videoContainer = document.getElementById('videoContainer');
-const videoPlaceholder = document.getElementById('videoPlaceholder');
-const toggleCameraBtn = document.getElementById('toggleCamera');
-const toggleCameraText = document.getElementById('toggleCameraText');
-const btnStartCameraCenter = document.getElementById('btnStartCameraCenter');
-const btnToggleAI = document.getElementById('btnToggleAI');
-const aiToggleText = document.getElementById('aiToggleText');
-const btnToggleROI = document.getElementById('btnToggleROI');
-const roiBtnText = document.getElementById('roiBtnText');
-const roiBox = document.getElementById('roiBox');
-const btnManualCapture = document.getElementById('btnManualCapture');
-const btnFullscreen = document.getElementById('btnFullscreen');
-const btnToggleSound = document.getElementById('btnToggleSound');
-const soundIcon = document.getElementById('soundIcon');
-const recBadge = document.getElementById('recBadge');
-const sourceBadge = document.getElementById('sourceBadge');
-const hudClock = document.getElementById('hudClock');
-const aiEngineStatus = document.getElementById('aiEngineStatus');
-const wsStatus = document.getElementById('wsStatus');
-const wsIndicator = document.getElementById('wsIndicator');
-const hudAlertBanner = document.getElementById('hudAlertBanner');
-const hudAlertText = document.getElementById('hudAlertText');
-const fpsCounter = document.getElementById('fpsCounter');
+    // ==========================================
+    // UTILIDADES
+    // ==========================================
+    const $ = (id) => document.getElementById(id);
+    const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-// Métricas DOM
-const statTodayPersons = document.getElementById('statTodayPersons');
-const statTodayEvents = document.getElementById('statTodayEvents');
-const statLatestAlert = document.getElementById('statLatestAlert');
-const statRetentionInfo = document.getElementById('statRetentionInfo');
-
-// Galería y Timeline
-const gallery = document.getElementById('captureGallery');
-const dateFilter = document.getElementById('dateFilter');
-const clearFilterBtn = document.getElementById('clearFilter');
-const filterButtons = document.querySelectorAll('.btn-filter');
-const btnPrevPage = document.getElementById('btnPrevPage');
-const btnNextPage = document.getElementById('btnNextPage');
-const pageIndicator = document.getElementById('pageIndicator');
-const galleryCountBadge = document.getElementById('galleryCountBadge');
-const timelineTrack = document.getElementById('timelineTrack');
-const timelineStats = document.getElementById('timelineStats');
-
-// Modal Forense
-const imagePreviewModal = new bootstrap.Modal(document.getElementById('imagePreviewModal'));
-const previewImage = document.getElementById('previewImage');
-const previewVideo = document.getElementById('previewVideo');
-const photoViewerContainer = document.getElementById('photoViewerContainer');
-const videoViewerContainer = document.getElementById('videoViewerContainer');
-const btnViewPhoto = document.getElementById('btnViewPhoto');
-const btnViewVideo = document.getElementById('btnViewVideo');
-const modalTitle = document.getElementById('modalTitle');
-const modalEventBadge = document.getElementById('modalEventBadge');
-const modalConfidence = document.getElementById('modalConfidence');
-const imageTimestamp = document.getElementById('imageTimestamp');
-const modalProtectedStatus = document.getElementById('modalProtectedStatus');
-const btnModalStar = document.getElementById('btnModalStar');
-const starIcon = document.getElementById('starIcon');
-const starText = document.getElementById('starText');
-const btnModalDelete = document.getElementById('btnModalDelete');
-const downloadBtn = document.getElementById('downloadImage');
-
-// Modal Ajustes
-const settingsModal = new bootstrap.Modal(document.getElementById('settingsModal'));
-const telegramEnabledInput = document.getElementById('telegramEnabled');
-const telegramTokenInput = document.getElementById('telegramToken');
-const telegramChatIdInput = document.getElementById('telegramChatId');
-const btnTestTelegram = document.getElementById('btnTestTelegram');
-const telegramTestResult = document.getElementById('telegramTestResult');
-const aiThresholdRange = document.getElementById('aiThresholdRange');
-const thresholdValueLabel = document.getElementById('thresholdValueLabel');
-const cooldownRange = document.getElementById('cooldownRange');
-const cooldownValueLabel = document.getElementById('cooldownValueLabel');
-const classPerson = document.getElementById('classPerson');
-const classCar = document.getElementById('classCar');
-const classAnimals = document.getElementById('classAnimals');
-const videoClipsEnabled = document.getElementById('videoClipsEnabled');
-const retentionRange = document.getElementById('retentionRange');
-const retentionValueLabel = document.getElementById('retentionValueLabel');
-const btnManualCleanup = document.getElementById('btnManualCleanup');
-const btnSaveSettings = document.getElementById('btnSaveSettings');
-
-// Fuente de Cámara (WebRTC vs RTSP)
-const sourceWebRTCRadio = document.getElementById('sourceWebRTC');
-const sourceRTSPRadio = document.getElementById('sourceRTSP');
-const rtspConfigSection = document.getElementById('rtspConfigSection');
-const rtspUrlInput = document.getElementById('rtspUrlInput');
-const rtspTransportSelect = document.getElementById('rtspTransportSelect');
-const btnTestRtsp = document.getElementById('btnTestRtsp');
-const rtspTestResult = document.getElementById('rtspTestResult');
-
-// ==========================================
-// ESTADO GLOBAL
-// ==========================================
-let stream = null;
-let isStreaming = false;
-let isAiActive = true;
-let isSoundEnabled = true;
-let activeROI = { enabled: false, x: 10, y: 10, width: 80, height: 80 }; // Porcentajes
-let cocoModel = null;
-let ws = null;
-
-// Fuente de Video actual
-let currentVideoSource = 'webrtc'; // 'webrtc' o 'rtsp'
-let currentRtspUrl = '';
-let currentRtspTransport = 'tcp';
-
-// Paginación y Filtros
-let currentPage = 1;
-let currentFilterType = 'all';
-let currentSelectedEvent = null;
-
-// Parámetros de Detección
-let detectionThreshold = 0.65;
-let cooldownMs = 8000;
-let lastAlertTimestamp = 0;
-let isRecordingClip = false;
-
-// Reloj y FPS
-let lastFrameTime = performance.now();
-let frameCount = 0;
-let currentFps = 30;
-
-// Configuración de Audio de Alarma
-let audioCtx = null;
-
-function initAudio() {
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-}
-
-function playAlertSiren() {
-    if (!isSoundEnabled) return;
-    try {
-        initAudio();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'sawtooth';
-        
-        const now = audioCtx.currentTime;
-        osc.frequency.setValueAtTime(880, now);
-        osc.frequency.exponentialRampToValueAtTime(1760, now + 0.15);
-        osc.frequency.exponentialRampToValueAtTime(880, now + 0.3);
-
-        gain.gain.setValueAtTime(0.15, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
-
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start(now);
-        osc.stop(now + 0.36);
-    } catch (e) {
-        console.warn('Audio no permitido todavía:', e);
-    }
-}
-
-// ==========================================
-// INICIALIZACIÓN
-// ==========================================
-window.addEventListener('DOMContentLoaded', async () => {
-    initClock();
-    initWebSocket();
-    await loadSettings();
-    await loadStats();
-    await loadCapturedEvents();
-    await loadTimeline();
-    initModel();
-});
-
-// Reloj táctico en tiempo real
-function initClock() {
-    setInterval(() => {
-        const now = new Date();
-        hudClock.textContent = now.toLocaleTimeString('es-ES', { hour12: false }) + '.' + String(Math.floor(now.getMilliseconds() / 100));
-    }, 100);
-}
-
-// ==========================================
-// TENSORFLOW.JS / MODELO COCO-SSD
-// ==========================================
-async function initModel() {
-    try {
-        aiEngineStatus.textContent = 'IA: CARGANDO COCO-SSD...';
-        aiEngineStatus.className = 'text-warning font-mono';
-        
-        cocoModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
-        
-        aiEngineStatus.textContent = 'IA: ACTIVA (COCO-SSD)';
-        aiEngineStatus.className = 'text-emerald font-mono';
-        console.log('[IA] Modelo COCO-SSD cargado con éxito en GPU/WebGL.');
-    } catch (err) {
-        console.error('[IA] Error al inicializar TensorFlow.js:', err);
-        aiEngineStatus.textContent = 'IA: ERROR AL CARGAR';
-        aiEngineStatus.className = 'text-danger font-mono';
-    }
-}
-
-// ==========================================
-// CONTROL DE CÁMARA (WEBRTC vs RTSP)
-// ==========================================
-async function startCamera() {
-    initAudio();
-    if (currentVideoSource === 'rtsp') {
-        startRtspStream();
-    } else {
-        startWebRtcCamera();
-    }
-}
-
-// Iniciar cámara local o webcam USB
-async function startWebRtcCamera() {
-    try {
-        const constraints = {
-            video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'environment'
-            },
-            audio: false
-        };
-
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream;
-        video.style.display = 'block';
-        rtspImageElement.style.display = 'none';
-
-        video.onloadedmetadata = () => {
-            overlayCanvas.width = video.videoWidth;
-            overlayCanvas.height = video.videoHeight;
-            isStreaming = true;
-            videoPlaceholder.style.display = 'none';
-            toggleCameraText.textContent = 'Detener';
-            recBadge.className = 'badge bg-danger rec-badge';
-            recBadge.innerHTML = '<span class="blink-dot"></span> LIVE';
-            sourceBadge.textContent = 'WEBRTC';
-            sourceBadge.className = 'badge bg-dark-subtle text-emerald font-mono';
-            
-            requestAnimationFrame(detectLoop);
-        };
-    } catch (err) {
-        console.error('Error al acceder a la cámara:', err);
-        alert('No se pudo acceder a la cámara local. Si usas cámara Wi-Fi, cámbiala en Ajustes.');
-    }
-}
-
-// Iniciar cámara Wi-Fi vía stream RTSP puenteado
-function startRtspStream() {
-    if (!currentRtspUrl) {
-        alert('No tienes configurada ninguna URL RTSP. Ve a Ajustes > Cámara Wi-Fi e ingrésala.');
-        settingsModal.show();
-        return;
-    }
-
-    video.style.display = 'none';
-    if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        video.srcObject = null;
-        stream = null;
-    }
-
-    rtspImageElement.style.display = 'block';
-    videoPlaceholder.style.display = 'none';
-    sourceBadge.textContent = 'WI-FI RTSP';
-    sourceBadge.className = 'badge bg-dark-subtle text-info font-mono';
-
-    // Cargar stream MJPEG desde el puente Express / FFmpeg
-    rtspImageElement.src = `/api/stream/mjpeg?t=${Date.now()}`;
-
-    rtspImageElement.onload = () => {
-        if (!isStreaming) {
-            overlayCanvas.width = rtspImageElement.naturalWidth || 1280;
-            overlayCanvas.height = rtspImageElement.naturalHeight || 720;
-            isStreaming = true;
-            toggleCameraText.textContent = 'Detener';
-            recBadge.className = 'badge bg-danger rec-badge';
-            recBadge.innerHTML = '<span class="blink-dot"></span> LIVE';
-            requestAnimationFrame(detectLoop);
+    function el(tag, attrs = {}, ...children) {
+        const n = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs)) {
+            if (v === undefined || v === null || v === false) continue;
+            if (k === 'class') n.className = v;
+            else if (k === 'text') n.textContent = v;
+            else if (k === 'dataset') Object.assign(n.dataset, v);
+            else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+            else n.setAttribute(k, v === true ? '' : v);
         }
+        for (const c of children.flat()) if (c !== null && c !== undefined) n.append(c);
+        return n;
+    }
+    const icon = (name, extra = '') => el('i', { class: `bi bi-${name} ${extra}`.trim() });
+
+    async function api(method, url, body) {
+        const opts = { method, headers: { 'X-Requested-With': 'betha' } };
+        if (body !== undefined) {
+            opts.headers['Content-Type'] = 'application/json';
+            opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(url, opts);
+        if (res.status === 401) {
+            location.href = '/login.html';
+            throw new Error('Sesión caducada');
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            const msg = data.error || (data.errors ? Object.entries(data.errors).map(([k, v]) => `${k}: ${v}`).join(' · ') : `Error ${res.status}`);
+            throw new Error(msg);
+        }
+        return data;
+    }
+
+    function toast(text, kind = 'secondary') {
+        const t = el('div', { class: `toast align-items-center text-bg-${kind} border-0`, role: 'status' },
+            el('div', { class: 'd-flex' },
+                el('div', { class: 'toast-body', text }),
+                el('button', { type: 'button', class: 'btn-close btn-close-white me-2 m-auto', 'data-bs-dismiss': 'toast', 'aria-label': 'Cerrar' })));
+        $('toastContainer').append(t);
+        const bt = new bootstrap.Toast(t, { delay: 3500 });
+        t.addEventListener('hidden.bs.toast', () => t.remove());
+        bt.show();
+    }
+
+    const store = {
+        get(k, def) { try { const v = localStorage.getItem(`betha.${k}`); return v === null ? def : JSON.parse(v); } catch (_) { return def; } },
+        set(k, v) { try { localStorage.setItem(`betha.${k}`, JSON.stringify(v)); } catch (_) {} }
     };
 
-    rtspImageElement.onerror = () => {
-        console.warn('[RTSP] Error o reconexión del stream.');
+    const fmtTime = (iso) => new Date(iso).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const fmtDateTime = (iso) => new Date(iso).toLocaleString('es-DO', { hour12: false });
+    const MODE_LABELS = { armed: 'ARMADO', home: 'EN CASA', disarmed: 'DESARMADO' };
+    const TYPE_ICONS = { person: 'person-fill', manual: 'camera', car: 'car-front-fill', truck: 'truck', bus: 'bus-front', motorcycle: 'bicycle', bicycle: 'bicycle', dog: 'bug-fill', cat: 'bug-fill', bird: 'feather', horse: 'bug-fill' };
+
+    // ==========================================
+    // ESTADO
+    // ==========================================
+    const state = {
+        settings: {},
+        cameras: new Map(),      // id -> { data, tile, img, canvas, roiEl, dets, detTs, roiEdit }
+        mode: null,
+        page: 1,
+        filter: 'all',
+        cameraFilter: '',
+        selected: null,
+        layout: store.get('layout', 2),
+        quality: store.get('quality', 'high'),
+        sound: store.get('sound', true),
+        storage: null
     };
-}
 
-function stopCamera() {
-    if (currentVideoSource === 'rtsp') {
-        rtspImageElement.src = '';
-        rtspImageElement.style.display = 'none';
-        fetch('/api/stream/stop', { method: 'POST' }).catch(() => {});
-    } else {
-        if (stream) {
-            stream.getTracks().forEach(t => t.stop());
-            video.srcObject = null;
-            stream = null;
-        }
-    }
-    
-    isStreaming = false;
-    videoPlaceholder.style.display = 'flex';
-    toggleCameraText.textContent = 'Iniciar Cámara';
-    recBadge.className = 'badge bg-secondary rec-badge';
-    recBadge.innerHTML = 'INACTIVO';
+    const imageModal = new bootstrap.Modal($('imagePreviewModal'));
+    const settingsModal = new bootstrap.Modal($('settingsModal'));
 
-    const ctx = overlayCanvas.getContext('2d');
-    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-}
-
-toggleCameraBtn.addEventListener('click', () => {
-    if (isStreaming) stopCamera(); else startCamera();
-});
-
-btnStartCameraCenter.addEventListener('click', startCamera);
-
-// Botón Toggle IA
-btnToggleAI.addEventListener('click', () => {
-    isAiActive = !isAiActive;
-    if (isAiActive) {
-        btnToggleAI.className = 'btn btn-outline-cyan active';
-        aiToggleText.textContent = 'IA: Activa';
-    } else {
-        btnToggleAI.className = 'btn btn-outline-secondary';
-        aiToggleText.textContent = 'IA: Pausada';
-        const ctx = overlayCanvas.getContext('2d');
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    }
-});
-
-// Botón Pantalla Completa
-btnFullscreen.addEventListener('click', () => {
-    if (!document.fullscreenElement) {
-        videoContainer.requestFullscreen().catch(err => console.warn(err));
-    } else {
-        document.exitFullscreen();
-    }
-});
-
-// Botón Sonido
-btnToggleSound.addEventListener('click', () => {
-    isSoundEnabled = !isSoundEnabled;
-    if (isSoundEnabled) {
-        btnToggleSound.className = 'btn btn-outline-cyan btn-sm';
-        soundIcon.className = 'bi bi-volume-up';
-    } else {
-        btnToggleSound.className = 'btn btn-outline-secondary btn-sm';
-        soundIcon.className = 'bi bi-volume-mute';
-    }
-});
-
-// ==========================================
-// ZONA DE DETECCIÓN ROI (REGION OF INTEREST)
-// ==========================================
-btnToggleROI.addEventListener('click', () => {
-    activeROI.enabled = !activeROI.enabled;
-    if (activeROI.enabled) {
-        roiBox.style.display = 'block';
-        btnToggleROI.className = 'btn btn-cyan btn-outline-cyan active';
-        roiBtnText.textContent = 'ROI: ON';
-        updateROIElement();
-    } else {
-        roiBox.style.display = 'none';
-        btnToggleROI.className = 'btn btn-outline-secondary';
-        roiBtnText.textContent = 'Zona ROI';
-    }
-    saveRoiSettings();
-});
-
-function updateROIElement() {
-    roiBox.style.left = `${activeROI.x}%`;
-    roiBox.style.top = `${activeROI.y}%`;
-    roiBox.style.width = `${activeROI.width}%`;
-    roiBox.style.height = `${activeROI.height}%`;
-}
-
-// ==========================================
-// CICLO PRINCIPAL DE DETECCIÓN POR IA
-// ==========================================
-async function detectLoop() {
-    if (!isStreaming) return;
-
-    // Medición de FPS
-    const now = performance.now();
-    frameCount++;
-    if (now - lastFrameTime >= 1000) {
-        currentFps = frameCount;
-        fpsCounter.textContent = `${currentFps} FPS`;
-        frameCount = 0;
-        lastFrameTime = now;
-    }
-
-    const ctx = overlayCanvas.getContext('2d');
-    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-
-    // Determinar la fuente visual activa
-    const isRtsp = currentVideoSource === 'rtsp';
-    const visualElement = isRtsp ? rtspImageElement : video;
-    const isReady = isRtsp 
-        ? (rtspImageElement.complete && rtspImageElement.naturalWidth > 0)
-        : (video.readyState === 4);
-
-    if (isAiActive && cocoModel && isReady) {
+    // ==========================================
+    // SIRENA (Web Audio, sin archivos)
+    // ==========================================
+    let audioCtx = null;
+    function playSiren() {
+        if (!state.sound) return;
         try {
-            // Predicción por TensorFlow sobre la fuente activa
-            const predictions = await cocoModel.detect(visualElement);
-            
-            // Filtrar predicciones según configuración y ROI
-            const validDetections = filterDetections(predictions);
-
-            // Renderizar cajas tácticas
-            drawTacticalHUD(ctx, validDetections);
-
-            // Si hay detecciones válidas de personas/vehículos
-            if (validDetections.length > 0) {
-                handleTriggerEvent(validDetections[0]);
+            audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            for (let i = 0; i < 3; i++) {
+                const t = audioCtx.currentTime + i * 0.4;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(880, t);
+                osc.frequency.exponentialRampToValueAtTime(1760, t + 0.15);
+                osc.frequency.exponentialRampToValueAtTime(880, t + 0.3);
+                gain.gain.setValueAtTime(0.12, t);
+                gain.gain.exponentialRampToValueAtTime(0.01, t + 0.35);
+                osc.connect(gain).connect(audioCtx.destination);
+                osc.start(t);
+                osc.stop(t + 0.36);
             }
-        } catch (e) {
-            console.error('[IA] Error en frame de detección:', e);
+        } catch (_) { /* el navegador bloquea audio hasta la primera interacción */ }
+    }
+    document.addEventListener('click', () => {
+        if (!audioCtx) try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+    }, { once: true });
+
+    function renderSound() {
+        $('btnToggleSound').className = `btn btn-sm ${state.sound ? 'btn-outline-cyan' : 'btn-outline-secondary'}`;
+        $('soundIcon').className = `bi ${state.sound ? 'bi-volume-up' : 'bi-volume-mute'}`;
+    }
+    $('btnToggleSound').addEventListener('click', () => {
+        state.sound = !state.sound;
+        store.set('sound', state.sound);
+        renderSound();
+    });
+
+    // ==========================================
+    // RELOJ, STATS, MODO
+    // ==========================================
+    setInterval(() => {
+        $('hudClock').textContent = new Date().toLocaleTimeString('es-DO', { hour12: false });
+    }, 1000);
+
+    async function loadStats() {
+        try {
+            const s = await api('GET', '/api/stats');
+            $('statTodayPersons').textContent = s.todayPersons;
+            $('statTodayEvents').textContent = s.todayCount;
+            if (s.latestAt) {
+                const min = Math.round((Date.now() - s.latestAt) / 60000);
+                $('statLatestAlert').textContent = min < 1 ? 'Hace un instante' : min < 60 ? `Hace ${min} min` : `Hace ${Math.round(min / 60)} h`;
+            } else {
+                $('statLatestAlert').textContent = 'Ninguna';
+            }
+            renderAi(s.ai);
+            renderMode(s.mode);
+        } catch (e) { console.warn(e); }
+    }
+
+    function renderAi(ai) {
+        const elAi = $('aiEngineStatus');
+        if (!ai) return;
+        if (ai.status === 'activa') {
+            const model = (ai.model || '').replace('yolox_', 'YOLOX-').replace('nano', 'Nano').replace('tiny', 'Tiny');
+            elAi.textContent = `IA: ${model}${ai.avgMs ? ` · ${ai.avgMs} ms` : ''}`;
+            elAi.className = 'text-emerald';
+        } else {
+            elAi.textContent = `IA: ${ai.status}`;
+            elAi.className = 'text-warning';
         }
     }
 
-    requestAnimationFrame(detectLoop);
-}
+    async function loadStorage() {
+        try {
+            const info = await api('GET', '/api/system/info');
+            state.storage = info.storage;
+            renderStorage();
+            renderAi(info.ai);
+        } catch (_) {}
+    }
+    function renderStorage() {
+        if (!state.storage) return;
+        const used = state.storage.usedMb >= 1024 ? `${(state.storage.usedMb / 1024).toFixed(1)} GB` : `${state.storage.usedMb} MB`;
+        const cap = parseFloat(state.settings.max_storage_gb || 0);
+        $('statStorage').textContent = cap > 0 ? `${used} / ${cap} GB` : used;
+        $('storageInfo').textContent = `En uso: ${used} en ${state.storage.files} archivos · retención ${state.settings.retention_days || '?'} días`;
+    }
 
-// Filtrar predicciones por umbral, clase y ROI
-function filterDetections(predictions) {
-    const allowed = [];
-    if (classPerson.checked) allowed.push('person');
-    if (classCar.checked) allowed.push('car', 'motorcycle', 'bicycle', 'truck');
-    if (classAnimals.checked) allowed.push('dog', 'cat', 'bird', 'horse');
-
-    return predictions.filter(pred => {
-        if (pred.score < detectionThreshold) return false;
-        if (!allowed.includes(pred.class)) return false;
-
-        if (activeROI.enabled) {
-            const [bx, by, bw, bh] = pred.bbox;
-            const centerX = (bx + bw / 2) / overlayCanvas.width * 100;
-            const centerY = (by + bh / 2) / overlayCanvas.height * 100;
-
-            const inRoiX = centerX >= activeROI.x && centerX <= (activeROI.x + activeROI.width);
-            const inRoiY = centerY >= activeROI.y && centerY <= (activeROI.y + activeROI.height);
-            if (!inRoiX || !inRoiY) return false;
+    function renderMode(m) {
+        if (!m) return;
+        state.mode = m;
+        qsa('.btn-mode').forEach((b) => {
+            b.classList.toggle('active', b.dataset.mode === m.mode);
+            b.dataset.active = b.dataset.mode === m.mode ? m.mode : '';
+        });
+        const hint = $('modeHint');
+        let text = '';
+        if (m.source === 'schedule') text = `Modo ${MODE_LABELS[m.mode]} por horario`;
+        if (m.source === 'override' && m.until) {
+            text = `Modo ${MODE_LABELS[m.mode]} temporal hasta las ${new Date(m.until).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}`;
         }
+        hint.textContent = text;
+        hint.className = `mode-hint small text-center font-mono mode-${m.mode}${text ? ' show' : ''}`;
+        document.body.dataset.mode = m.mode;
+    }
 
-        return true;
+    qsa('.btn-mode').forEach((b) => b.addEventListener('click', async () => {
+        try {
+            const r = await api('POST', '/api/mode', { mode: b.dataset.mode });
+            renderMode(r.mode);
+        } catch (e) { toast(e.message, 'danger'); }
+    }));
+
+    $('btnLogout').addEventListener('click', async () => {
+        try { await api('POST', '/api/auth/logout'); } catch (_) {}
+        location.href = '/login.html';
     });
-}
 
-// Dibujar Bounding Boxes con estilo táctico cibernético
-function drawTacticalHUD(ctx, detections) {
-    detections.forEach(det => {
-        const [x, y, width, height] = det.bbox;
-        const score = Math.round(det.score * 100);
-        const isPerson = det.class === 'person';
+    // ==========================================
+    // CÁMARAS EN VIVO
+    // ==========================================
+    function streamUrl(id) {
+        return `/api/cameras/${id}/stream${state.quality === 'low' ? '?q=low' : ''}`;
+    }
+
+    function setLayout(n) {
+        state.layout = n;
+        store.set('layout', n);
+        $('cameraGrid').dataset.layout = String(n);
+        qsa('[data-layout]').forEach((b) => b.tagName === 'BUTTON' && b.classList.toggle('active', b.dataset.layout === String(n)));
+    }
+    qsa('button[data-layout]').forEach((b) => b.addEventListener('click', () => setLayout(parseInt(b.dataset.layout, 10))));
+
+    function renderQuality() {
+        $('qualityText').textContent = state.quality === 'low' ? 'Baja' : 'Alta';
+        $('btnQuality').classList.toggle('active', state.quality === 'low');
+    }
+    $('btnQuality').addEventListener('click', () => {
+        state.quality = state.quality === 'low' ? 'high' : 'low';
+        store.set('quality', state.quality);
+        renderQuality();
+        for (const [id, c] of state.cameras) if (c.data.enabled) c.img.src = streamUrl(id);
+    });
+
+    async function loadCameras() {
+        const list = await api('GET', '/api/cameras');
+        renderCameras(list);
+    }
+
+    function renderCameras(list) {
+        const grid = $('cameraGrid');
+        const ids = new Set(list.map((c) => c.id));
+        for (const [id, c] of state.cameras) {
+            if (!ids.has(id)) {
+                c.img.src = '';
+                c.tile.remove();
+                state.cameras.delete(id);
+            }
+        }
+        for (const cam of list) {
+            const existing = state.cameras.get(cam.id);
+            if (existing) {
+                const wasEnabled = existing.data.enabled;
+                existing.data = cam;
+                if (cam.enabled && !wasEnabled) existing.img.src = streamUrl(cam.id);
+                if (!cam.enabled) existing.img.src = '';
+                updateTile(existing);
+            } else {
+                const c = createTile(cam);
+                state.cameras.set(cam.id, c);
+                grid.append(c.tile);
+            }
+        }
+        $('cameraEmpty').classList.toggle('d-none', list.length > 0);
+        $('camCountBadge').textContent = list.length;
+        renderCameraFilter(list);
+        renderCameraList(list);
+    }
+
+    function createTile(cam) {
+        const tile = $('cameraTileTemplate').content.firstElementChild.cloneNode(true);
+        const c = {
+            data: cam, tile,
+            img: tile.querySelector('.tile-img'),
+            canvas: tile.querySelector('.tile-canvas'),
+            roiEl: tile.querySelector('.tile-roi'),
+            view: tile.querySelector('.tile-view'),
+            dets: [], detTs: 0, roiEdit: null
+        };
+        tile.dataset.id = cam.id;
+        if (cam.enabled && document.visibilityState === 'visible') c.img.src = streamUrl(cam.id);
+        c.img.addEventListener('error', () => {
+            // El stream se corta si el servidor se reinicia: reintentar
+            setTimeout(() => { if (c.data.enabled && document.visibilityState === 'visible') c.img.src = streamUrl(cam.id) + (state.quality === 'low' ? '&' : '?') + 'r=' + Date.now(); }, 3000);
+        });
+
+        tile.querySelector('[data-act="snapshot"]').addEventListener('click', async () => {
+            try {
+                await api('POST', `/api/cameras/${cam.id}/snapshot`);
+                toast('Captura guardada', 'success');
+            } catch (e) { toast(e.message, 'danger'); }
+        });
+        tile.querySelector('[data-act="fullscreen"]').addEventListener('click', () => {
+            if (document.fullscreenElement) document.exitFullscreen();
+            else c.view.requestFullscreen().catch(() => {});
+        });
+        tile.querySelector('[data-act="roi"]').addEventListener('click', () => startRoiEdit(c));
+        tile.querySelector('[data-roi="save"]').addEventListener('click', () => saveRoi(c, true));
+        tile.querySelector('[data-roi="disable"]').addEventListener('click', () => saveRoi(c, false));
+        tile.querySelector('[data-roi="cancel"]').addEventListener('click', () => endRoiEdit(c));
+        setupRoiDrag(c);
+        updateTile(c);
+        return c;
+    }
+
+    function updateTile(c) {
+        const cam = c.data;
+        const t = c.tile;
+        t.querySelector('.tile-name').textContent = cam.name;
+        const badge = t.querySelector('.tile-status');
+        const status = cam.enabled ? cam.status : 'disabled';
+        const labels = { online: 'EN VIVO', starting: 'CONECTANDO', offline: 'SIN SEÑAL', stopped: 'DETENIDA', disabled: 'DESACTIVADA' };
+        badge.textContent = labels[status] || status;
+        badge.className = `tile-status badge ${status === 'online' ? 'bg-danger' : status === 'starting' ? 'bg-warning text-dark' : 'bg-secondary'}`;
+        if (status === 'online') badge.prepend(el('span', { class: 'blink-dot' }));
+        const codec = ['h264', 'hevc'].includes(cam.codec) ? ` ${cam.codec === 'hevc' ? 'H.265' : 'H.264'}` : '';
+        t.querySelector('.tile-info').textContent = cam.width ? `${cam.width}×${cam.height}${codec}` : '';
+        const off = t.querySelector('.tile-offline');
+        off.classList.toggle('show', status !== 'online');
+        t.querySelector('.tile-offline-text').textContent =
+            status === 'disabled' ? 'Cámara desactivada' :
+            status === 'offline' ? (cam.lastError ? `Sin señal: ${cam.lastError}` : 'Sin señal, reintentando…') :
+            'Conectando…';
+        const roiBtn = t.querySelector('[data-act="roi"]');
+        roiBtn.classList.toggle('btn-outline-cyan', Boolean(cam.roi && cam.roi.enabled));
+        roiBtn.classList.toggle('btn-outline-secondary', !(cam.roi && cam.roi.enabled));
+    }
+
+    // Pausar los streams cuando la pestaña no se ve (ahorra datos móviles)
+    document.addEventListener('visibilitychange', () => {
+        for (const [id, c] of state.cameras) {
+            if (document.visibilityState === 'visible') { if (c.data.enabled) c.img.src = streamUrl(id); }
+            else c.img.src = '';
+        }
+    });
+
+    /** Rectángulo real de la imagen dentro del contenedor (object-fit: contain). */
+    function contentRect(img, box) {
+        const nw = img.naturalWidth || 16;
+        const nh = img.naturalHeight || 9;
+        const cw = box.clientWidth;
+        const ch = box.clientHeight;
+        const s = Math.min(cw / nw, ch / nh);
+        const w = nw * s;
+        const h = nh * s;
+        return { x: (cw - w) / 2, y: (ch - h) / 2, w, h };
+    }
+
+    // Bucle de dibujo de detecciones y ROI (~12 fps)
+    let lastDraw = 0;
+    function drawLoop(ts) {
+        requestAnimationFrame(drawLoop);
+        if (ts - lastDraw < 80) return;
+        lastDraw = ts;
+        const now = Date.now();
+        for (const c of state.cameras.values()) {
+            const { canvas, img, view } = c;
+            const W = view.clientWidth;
+            const H = view.clientHeight;
+            if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, W, H);
+            const r = contentRect(img, view);
+            positionRoi(c, r);
+            if (now - c.detTs > 1500 || !c.dets.length) continue;
+            for (const d of c.dets) drawBox(ctx, d, r);
+        }
+    }
+    requestAnimationFrame(drawLoop);
+
+    function drawBox(ctx, d, r) {
+        const [bx, by, bw, bh] = d.bbox;
+        const x = r.x + bx * r.w;
+        const y = r.y + by * r.h;
+        const w = bw * r.w;
+        const h = bh * r.h;
+        const isPerson = d.class === 'person';
         const color = isPerson ? '#10b981' : '#06b6d4';
-        const labelText = isPerson ? `👤 PERSONA ${score}%` : `🎯 ${det.class.toUpperCase()} ${score}%`;
-
+        const text = `${d.label.toUpperCase()} ${Math.round(d.score * 100)}%`;
         ctx.save();
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 2;
         ctx.shadowColor = color;
-        ctx.shadowBlur = 10;
-        ctx.strokeRect(x, y, width, height);
-
-        const cornerLength = Math.min(20, width / 4, height / 4);
-        ctx.lineWidth = 4;
-        
-        ctx.beginPath();
-        ctx.moveTo(x, y + cornerLength);
-        ctx.lineTo(x, y);
-        ctx.lineTo(x + cornerLength, y);
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.moveTo(x + width - cornerLength, y);
-        ctx.lineTo(x + width, y);
-        ctx.lineTo(x + width, y + cornerLength);
-        ctx.stroke();
-
+        ctx.shadowBlur = 8;
+        ctx.strokeRect(x, y, w, h);
         ctx.shadowBlur = 0;
-        ctx.font = 'bold 12px "JetBrains Mono", monospace';
-        const textWidth = ctx.measureText(labelText).width;
-        
+        ctx.font = 'bold 11px "JetBrains Mono", monospace';
+        const tw = ctx.measureText(text).width;
+        const ty = y - 18 < r.y ? y : y - 18;
         ctx.fillStyle = color;
-        ctx.fillRect(x, Math.max(0, y - 22), textWidth + 12, 22);
-
+        ctx.fillRect(x, ty, tw + 10, 18);
         ctx.fillStyle = '#022c22';
-        ctx.fillText(labelText, x + 6, Math.max(15, y - 6));
-
+        ctx.fillText(text, x + 5, ty + 13);
         ctx.restore();
-    });
-}
-
-// ==========================================
-// DISPARADOR DE ALERTA Y GRABACIÓN FORENSE
-// ==========================================
-async function handleTriggerEvent(detection) {
-    const now = Date.now();
-    if (now - lastAlertTimestamp < cooldownMs) return;
-    if (isRecordingClip) return;
-
-    lastAlertTimestamp = now;
-    isRecordingClip = true;
-
-    showHUDAlert(detection);
-    playAlertSiren();
-
-    // 1. Snapshot HD con overlay
-    const photoBlob = await takeSnapshotWithOverlay(detection);
-
-    // 2. Grabar clip de video (WebM)
-    let videoBlob = null;
-    if (videoClipsEnabled.checked) {
-        videoBlob = await recordVideoClip(6000);
     }
 
-    // 3. Subir al backend
-    await uploadEvidence({
-        photoBlob,
-        videoBlob,
-        eventType: detection.class,
-        label: detection.class === 'person' ? 'Persona' : detection.class,
-        confidence: detection.score
-    });
+    // ==========================================
+    // EDITOR DE ZONA ROI (arrastrar y redimensionar)
+    // ==========================================
+    function currentRoi(c) {
+        return c.roiEdit || c.data.roi || { enabled: false, x: 10, y: 10, width: 80, height: 80 };
+    }
 
-    isRecordingClip = false;
-}
+    function positionRoi(c, r) {
+        const roi = currentRoi(c);
+        const visible = Boolean(c.roiEdit) || Boolean(roi.enabled);
+        c.roiEl.classList.toggle('show', visible);
+        c.roiEl.classList.toggle('editing', Boolean(c.roiEdit));
+        if (!visible) return;
+        c.roiEl.style.left = `${r.x + (roi.x / 100) * r.w}px`;
+        c.roiEl.style.top = `${r.y + (roi.y / 100) * r.h}px`;
+        c.roiEl.style.width = `${(roi.width / 100) * r.w}px`;
+        c.roiEl.style.height = `${(roi.height / 100) * r.h}px`;
+    }
 
-function showHUDAlert(detection) {
-    const isPerson = detection.class === 'person';
-    hudAlertText.textContent = isPerson ? `¡PERSONA DETECTADA! (${Math.round(detection.score * 100)}%)` : `¡${detection.class.toUpperCase()} DETECTADO!`;
-    hudAlertBanner.className = 'hud-alert-banner show';
-    setTimeout(() => {
-        hudAlertBanner.className = 'hud-alert-banner';
-    }, 4000);
-}
+    function startRoiEdit(c) {
+        const r = c.data.roi || {};
+        c.roiEdit = { enabled: true, x: r.x ?? 10, y: r.y ?? 10, width: r.width ?? 80, height: r.height ?? 80 };
+        c.tile.classList.add('roi-editing');
+    }
 
-// Capturar frame compuesto (Video o RTSP + HUD)
-function takeSnapshotWithOverlay(detection) {
-    return new Promise(resolve => {
-        const offCanvas = document.createElement('canvas');
-        const isRtsp = currentVideoSource === 'rtsp';
-        const visualSource = isRtsp ? rtspImageElement : video;
+    function endRoiEdit(c) {
+        c.roiEdit = null;
+        c.tile.classList.remove('roi-editing');
+    }
 
-        const w = isRtsp ? (rtspImageElement.naturalWidth || 1280) : video.videoWidth;
-        const h = isRtsp ? (rtspImageElement.naturalHeight || 720) : video.videoHeight;
-        offCanvas.width = w;
-        offCanvas.height = h;
-
-        const offCtx = offCanvas.getContext('2d');
-        offCtx.drawImage(visualSource, 0, 0, w, h);
-
-        if (detection) {
-            drawTacticalHUD(offCtx, [detection]);
-        }
-
-        offCanvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.92);
-    });
-}
-
-// Grabar clip de video (soporta WebRTC y canvas stream para RTSP)
-function recordVideoClip(durationMs = 6000) {
-    return new Promise(resolve => {
+    async function saveRoi(c, enabled) {
+        const roi = { ...currentRoi(c), enabled };
         try {
-            const recordedChunks = [];
-            let recordStream = stream;
-            let drawTimer = null;
+            const r = await api('PATCH', `/api/cameras/${c.data.id}`, { roi });
+            c.data = { ...c.data, ...r.camera };
+            endRoiEdit(c);
+            updateTile(c);
+            toast(enabled ? 'Zona de detección guardada' : 'Zona desactivada: se vigila toda la imagen', 'success');
+        } catch (e) { toast(e.message, 'danger'); }
+    }
 
-            // Si es RTSP, el <img> MJPEG no es grabable directamente:
-            // lo copiamos 15 veces por segundo a un canvas oculto y grabamos ese canvas
-            if (currentVideoSource === 'rtsp') {
-                const w = rtspImageElement.naturalWidth || 1280;
-                const h = rtspImageElement.naturalHeight || 720;
-                const recCanvas = document.createElement('canvas');
-                recCanvas.width = w;
-                recCanvas.height = h;
-                const recCtx = recCanvas.getContext('2d');
-                drawTimer = setInterval(() => {
-                    recCtx.drawImage(rtspImageElement, 0, 0, w, h);
-                }, 66);
-                recordStream = recCanvas.captureStream ? recCanvas.captureStream(15) : null;
-            }
-
-            if (!recordStream) {
-                if (drawTimer) clearInterval(drawTimer);
-                return resolve(null);
-            }
-
-            const recorder = new MediaRecorder(recordStream, { mimeType: 'video/webm;codecs=vp8' });
-
-            recorder.ondataavailable = e => {
-                if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    function setupRoiDrag(c) {
+        let drag = null;
+        c.roiEl.addEventListener('pointerdown', (e) => {
+            if (!c.roiEdit) return;
+            e.preventDefault();
+            c.roiEl.setPointerCapture(e.pointerId);
+            drag = {
+                mode: e.target.classList.contains('roi-handle') ? 'resize' : 'move',
+                sx: e.clientX, sy: e.clientY, start: { ...c.roiEdit },
+                rect: contentRect(c.img, c.view)
             };
-
-            recorder.onstop = () => {
-                if (drawTimer) clearInterval(drawTimer);
-                const blob = new Blob(recordedChunks, { type: 'video/webm' });
-                resolve(blob);
-            };
-
-            recorder.start(500);
-
-            setTimeout(() => {
-                if (recorder.state === 'recording') {
-                    recorder.stop();
-                }
-            }, durationMs);
-        } catch (e) {
-            console.warn('[REC] Error al grabar video clip:', e);
-            resolve(null);
-        }
-    });
-}
-
-async function uploadEvidence({ photoBlob, videoBlob, eventType, label, confidence }) {
-    try {
-        const formData = new FormData();
-        formData.append('photo', photoBlob, 'capture.jpg');
-        if (videoBlob) {
-            formData.append('video', videoBlob, 'clip.webm');
-        }
-        formData.append('timestamp', new Date().toISOString());
-        formData.append('eventType', eventType);
-        formData.append('label', label);
-        formData.append('confidence', confidence);
-
-        const res = await fetch('/api/save-capture', {
-            method: 'POST',
-            body: formData
         });
-
-        const data = await res.json();
-        if (data.success) {
-            console.log('[EVIDENCIA] Guardada y notificada:', data.event);
-            loadStats();
-        }
-    } catch (err) {
-        console.error('Error al subir evidencia:', err);
-    }
-}
-
-// Captura Manual
-btnManualCapture.addEventListener('click', async () => {
-    if (!isStreaming) {
-        alert('Inicia la cámara primero para realizar una captura.');
-        return;
-    }
-
-    const photoBlob = await takeSnapshotWithOverlay(null);
-    await uploadEvidence({
-        photoBlob,
-        videoBlob: null,
-        eventType: 'manual',
-        label: 'Captura Manual',
-        confidence: 1.0
-    });
-    alert('Captura manual guardada.');
-});
-
-// ==========================================
-// WEBSOCKETS EN TIEMPO REAL
-// ==========================================
-function initWebSocket() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}`;
-
-    try {
-        ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-            wsStatus.textContent = 'EN LÍNEA';
-            wsIndicator.className = 'pulse-dot active';
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const message = JSON.parse(event.data);
-                if (message.type === 'NEW_EVENT') {
-                    handleIncomingEvent(message.data);
-                } else if (message.type === 'EVENT_UPDATED') {
-                    handleEventUpdated(message.data);
-                } else if (message.type === 'EVENT_DELETED') {
-                    handleEventDeleted(message.data);
-                }
-            } catch (err) {
-                console.error('Error procesando WS message:', err);
-            }
-        };
-
-        ws.onclose = () => {
-            wsStatus.textContent = 'RECONECTANDO...';
-            wsIndicator.className = 'pulse-dot';
-            setTimeout(initWebSocket, 4000);
-        };
-    } catch (e) {
-        console.warn('WebSocket error:', e);
-    }
-}
-
-function handleIncomingEvent(event) {
-    if (currentPage === 1 && (currentFilterType === 'all' || currentFilterType === event.event_type)) {
-        const card = createEventCard(event);
-        gallery.prepend(card);
-    }
-    loadStats();
-    loadTimeline();
-}
-
-function handleEventUpdated(data) {
-    const starBtn = document.querySelector(`.star-btn-card[data-id="${data.id}"]`);
-    if (starBtn) {
-        if (data.is_starred) {
-            starBtn.className = 'star-btn-card starred';
-            starBtn.innerHTML = '<i class="bi bi-star-fill"></i>';
-        } else {
-            starBtn.className = 'star-btn-card';
-            starBtn.innerHTML = '<i class="bi bi-star"></i>';
-        }
-    }
-}
-
-function handleEventDeleted(data) {
-    const card = document.querySelector(`.capture-card[data-id="${data.id}"]`);
-    if (card) card.remove();
-    loadStats();
-    loadTimeline();
-}
-
-// ==========================================
-// GALERÍA & EVENTOS
-// ==========================================
-async function loadCapturedEvents() {
-    try {
-        let url = `/api/events?page=${currentPage}&limit=12&type=${currentFilterType}`;
-        if (dateFilter.value) {
-            url += `&date=${dateFilter.value}`;
-        }
-        if (currentFilterType === 'starred') {
-            url = `/api/events?page=${currentPage}&limit=12&starred=true`;
-            if (dateFilter.value) url += `&date=${dateFilter.value}`;
-        }
-
-        const res = await fetch(url);
-        const data = await res.json();
-
-        gallery.innerHTML = '';
-        galleryCountBadge.textContent = data.total;
-        pageIndicator.textContent = `Página ${data.page} / ${data.totalPages}`;
-        btnPrevPage.disabled = data.page <= 1;
-        btnNextPage.disabled = data.page >= data.totalPages;
-
-        if (data.events.length === 0) {
-            gallery.innerHTML = `
-                <div class="text-center py-5 text-secondary">
-                    <i class="bi bi-inbox display-6 d-block mb-2"></i>
-                    <p class="small mb-0">No hay capturas registradas para esta selección.</p>
-                </div>
-            `;
-            return;
-        }
-
-        data.events.forEach(ev => {
-            const card = createEventCard(ev);
-            gallery.appendChild(card);
-        });
-    } catch (err) {
-        console.error('Error al cargar eventos:', err);
-    }
-}
-
-function createEventCard(event) {
-    const card = document.createElement('div');
-    card.className = 'capture-card';
-    card.dataset.id = event.id;
-
-    const isPerson = event.event_type === 'person';
-    const confidencePct = Math.round((event.confidence || 0) * 100);
-    const dateFormatted = new Date(event.timestamp).toLocaleTimeString('es-ES', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    });
-
-    const hasVideo = !!event.video_path;
-
-    card.innerHTML = `
-        <div class="capture-thumb-box">
-            <img class="capture-thumb" src="${event.photo_path}" alt="Captura" loading="lazy">
-            ${hasVideo ? '<span class="video-indicator-badge"><i class="bi bi-play-circle-fill me-1"></i>CLIP</span>' : ''}
-        </div>
-        <div class="capture-details">
-            <span class="capture-event-title ${isPerson ? 'text-emerald' : 'text-cyan'}">
-                <i class="bi ${isPerson ? 'bi-person-fill' : 'bi-camera'}"></i>
-                ${event.label || 'Evento'}
-                <span class="badge bg-dark border border-secondary text-secondary font-mono">${confidencePct}%</span>
-            </span>
-            <span class="capture-time"><i class="bi bi-clock me-1"></i>${dateFormatted}</span>
-        </div>
-        <button class="star-btn-card ${event.is_starred ? 'starred' : ''}" data-id="${event.id}" title="Destacar / Proteger">
-            <i class="bi ${event.is_starred ? 'bi-star-fill' : 'bi-star'}"></i>
-        </button>
-    `;
-
-    card.addEventListener('click', (e) => {
-        if (e.target.closest('.star-btn-card')) return;
-        showForensicModal(event);
-    });
-
-    const starBtn = card.querySelector('.star-btn-card');
-    starBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await toggleStarEvent(event.id);
-    });
-
-    return card;
-}
-
-filterButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-        filterButtons.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        currentFilterType = btn.dataset.filter;
-        currentPage = 1;
-        loadCapturedEvents();
-    });
-});
-
-dateFilter.addEventListener('change', () => {
-    currentPage = 1;
-    loadCapturedEvents();
-});
-
-clearFilterBtn.addEventListener('click', () => {
-    dateFilter.value = '';
-    currentPage = 1;
-    loadCapturedEvents();
-});
-
-btnPrevPage.addEventListener('click', () => {
-    if (currentPage > 1) {
-        currentPage--;
-        loadCapturedEvents();
-    }
-});
-
-btnNextPage.addEventListener('click', () => {
-    currentPage++;
-    loadCapturedEvents();
-});
-
-// ==========================================
-// MODAL FORENSE / VISOR AVANZADO
-// ==========================================
-function showForensicModal(event) {
-    currentSelectedEvent = event;
-    const isPerson = event.event_type === 'person';
-    const confidencePct = Math.round((event.confidence || 0) * 100);
-
-    modalTitle.textContent = `Registro Forense #${event.id}`;
-    modalEventBadge.className = isPerson ? 'badge bg-danger' : 'badge bg-info text-dark';
-    modalEventBadge.textContent = event.label.toUpperCase();
-    modalConfidence.textContent = `${confidencePct}%`;
-    imageTimestamp.textContent = new Date(event.timestamp).toLocaleString('es-ES', { hour12: false });
-
-    updateModalStarStatus(event.is_starred);
-    previewImage.src = event.photo_path;
-
-    if (event.video_path) {
-        previewVideo.src = event.video_path;
-        btnViewVideo.style.display = 'inline-block';
-    } else {
-        previewVideo.src = '';
-        btnViewVideo.style.display = 'none';
-    }
-
-    showPhotoViewer();
-    imagePreviewModal.show();
-}
-
-function showPhotoViewer() {
-    photoViewerContainer.style.display = 'block';
-    videoViewerContainer.style.display = 'none';
-    btnViewPhoto.className = 'btn btn-dark active';
-    btnViewVideo.className = 'btn btn-dark';
-    previewVideo.pause();
-}
-
-function showVideoViewer() {
-    photoViewerContainer.style.display = 'none';
-    videoViewerContainer.style.display = 'block';
-    btnViewPhoto.className = 'btn btn-dark';
-    btnViewVideo.className = 'btn btn-dark active';
-    previewVideo.play().catch(() => {});
-}
-
-btnViewPhoto.addEventListener('click', showPhotoViewer);
-btnViewVideo.addEventListener('click', showVideoViewer);
-
-function updateModalStarStatus(isStarred) {
-    if (isStarred) {
-        modalProtectedStatus.textContent = 'PROTEGIDO';
-        modalProtectedStatus.className = 'text-warning fw-bold';
-        starIcon.className = 'bi bi-star-fill text-warning me-1';
-        starText.textContent = 'Protegido';
-    } else {
-        modalProtectedStatus.textContent = 'NORMAL';
-        modalProtectedStatus.className = 'text-emerald';
-        starIcon.className = 'bi bi-star me-1';
-        starText.textContent = 'Proteger';
-    }
-}
-
-btnModalStar.addEventListener('click', async () => {
-    if (!currentSelectedEvent) return;
-    const res = await toggleStarEvent(currentSelectedEvent.id);
-    if (res) {
-        currentSelectedEvent.is_starred = res.is_starred;
-        updateModalStarStatus(res.is_starred);
-    }
-});
-
-async function toggleStarEvent(id) {
-    try {
-        const res = await fetch(`/api/events/${id}/star`, { method: 'PATCH' });
-        return await res.json();
-    } catch (e) {
-        console.error(e);
-        return null;
-    }
-}
-
-btnModalDelete.addEventListener('click', async () => {
-    if (!currentSelectedEvent) return;
-    if (!confirm('¿Seguro que deseas eliminar permanentemente esta captura y su grabación?')) return;
-
-    try {
-        const res = await fetch(`/api/events/${currentSelectedEvent.id}`, { method: 'DELETE' });
-        if (res.ok) {
-            imagePreviewModal.hide();
-            loadCapturedEvents();
-            loadStats();
-            loadTimeline();
-        }
-    } catch (e) {
-        alert('Error al eliminar evento');
-    }
-});
-
-downloadBtn.addEventListener('click', () => {
-    if (!currentSelectedEvent) return;
-    const isVideo = videoViewerContainer.style.display === 'block' && currentSelectedEvent.video_path;
-    const fileUrl = isVideo ? currentSelectedEvent.video_path : currentSelectedEvent.photo_path;
-
-    const link = document.createElement('a');
-    link.href = fileUrl;
-    link.download = fileUrl.split('/').pop();
-    link.click();
-});
-
-// ==========================================
-// LÍNEA DE TIEMPO INTERACTIVA (TIMELINE)
-// ==========================================
-async function loadTimeline() {
-    try {
-        const res = await fetch('/api/timeline');
-        const events = await res.json();
-
-        timelineTrack.innerHTML = '';
-        timelineStats.textContent = `${events.length} evento(s) en 24h`;
-
-        const now = Date.now();
-        const past24h = now - (24 * 60 * 60 * 1000);
-
-        events.forEach(ev => {
-            const evTime = new Date(ev.timestamp).getTime();
-            const pct = Math.max(0, Math.min(100, ((evTime - past24h) / (24 * 60 * 60 * 1000)) * 100));
-
-            const pin = document.createElement('div');
-            pin.className = `timeline-pin ${ev.event_type === 'person' ? 'type-person' : 'type-motion'}`;
-            pin.style.left = `${pct}%`;
-            pin.title = `${ev.label} - ${new Date(ev.timestamp).toLocaleTimeString()}`;
-
-            pin.addEventListener('click', () => {
-                showForensicModal(ev);
-            });
-
-            timelineTrack.appendChild(pin);
-        });
-    } catch (err) {
-        console.error('Error al cargar timeline:', err);
-    }
-}
-
-// ==========================================
-// ESTADÍSTICAS GLOBALES
-// ==========================================
-async function loadStats() {
-    try {
-        const res = await fetch('/api/stats');
-        const data = await res.json();
-
-        statTodayPersons.textContent = data.todayPersons;
-        statTodayEvents.textContent = data.todayCount;
-
-        if (data.latestEvent) {
-            const diffMin = Math.round((Date.now() - new Date(data.latestEvent.timestamp).getTime()) / 60000);
-            statLatestAlert.textContent = diffMin <= 1 ? 'Hace un instante' : `Hace ${diffMin} min`;
-        } else {
-            statLatestAlert.textContent = 'Ninguna';
-        }
-    } catch (e) {
-        console.warn('Error al cargar stats:', e);
-    }
-}
-
-// ==========================================
-// CONFIGURACIÓN / SETTINGS MODAL
-// ==========================================
-async function loadSettings() {
-    try {
-        const res = await fetch('/api/settings');
-        const s = await res.json();
-
-        telegramEnabledInput.checked = s.telegram_enabled === 'true';
-        telegramTokenInput.value = s.telegram_bot_token || '';
-        telegramChatIdInput.value = s.telegram_chat_id || '';
-
-        detectionThreshold = parseFloat(s.ai_threshold) || 0.65;
-        aiThresholdRange.value = Math.round(detectionThreshold * 100);
-        thresholdValueLabel.textContent = `${aiThresholdRange.value}%`;
-
-        cooldownMs = (parseInt(s.cooldown_seconds) || 8) * 1000;
-        cooldownRange.value = s.cooldown_seconds || 8;
-        cooldownValueLabel.textContent = `${cooldownRange.value}s`;
-
-        videoClipsEnabled.checked = s.video_clips_enabled !== 'false';
-
-        retentionRange.value = s.retention_days || 15;
-        retentionValueLabel.textContent = `${retentionRange.value} días`;
-        statRetentionInfo.textContent = `${retentionRange.value} Días`;
-
-        // Fuente de Video (WebRTC vs RTSP)
-        currentVideoSource = s.video_source || 'webrtc';
-        currentRtspUrl = s.rtsp_url || '';
-        currentRtspTransport = s.rtsp_transport || 'tcp';
-
-        if (currentVideoSource === 'rtsp') {
-            sourceRTSPRadio.checked = true;
-            rtspConfigSection.style.display = 'block';
-            sourceBadge.textContent = 'WI-FI RTSP';
-            sourceBadge.className = 'badge bg-dark-subtle text-info font-mono';
-        } else {
-            sourceWebRTCRadio.checked = true;
-            rtspConfigSection.style.display = 'none';
-            sourceBadge.textContent = 'WEBRTC';
-            sourceBadge.className = 'badge bg-dark-subtle text-emerald font-mono';
-        }
-
-        rtspUrlInput.value = currentRtspUrl;
-        rtspTransportSelect.value = currentRtspTransport;
-
-        if (s.roi_zone) {
-            try {
-                const parsedRoi = JSON.parse(s.roi_zone);
-                activeROI = parsedRoi;
-                if (activeROI.enabled) {
-                    roiBox.style.display = 'block';
-                    btnToggleROI.className = 'btn btn-cyan btn-outline-cyan active';
-                    roiBtnText.textContent = 'ROI: ON';
-                    updateROIElement();
-                }
-            } catch (_) {}
-        }
-    } catch (e) {
-        console.warn('Error al cargar configuración:', e);
-    }
-}
-
-// Selector visual de fuente en Ajustes
-sourceWebRTCRadio.addEventListener('change', () => {
-    if (sourceWebRTCRadio.checked) {
-        rtspConfigSection.style.display = 'none';
-    }
-});
-
-sourceRTSPRadio.addEventListener('change', () => {
-    if (sourceRTSPRadio.checked) {
-        rtspConfigSection.style.display = 'block';
-    }
-});
-
-aiThresholdRange.addEventListener('input', () => {
-    thresholdValueLabel.textContent = `${aiThresholdRange.value}%`;
-    detectionThreshold = aiThresholdRange.value / 100;
-});
-
-cooldownRange.addEventListener('input', () => {
-    cooldownValueLabel.textContent = `${cooldownRange.value}s`;
-    cooldownMs = cooldownRange.value * 1000;
-});
-
-retentionRange.addEventListener('input', () => {
-    retentionValueLabel.textContent = `${retentionRange.value} días`;
-});
-
-// Guardar ajustes
-btnSaveSettings.addEventListener('click', async () => {
-    const selectedSource = sourceRTSPRadio.checked ? 'rtsp' : 'webrtc';
-    const payload = {
-        telegram_enabled: telegramEnabledInput.checked ? 'true' : 'false',
-        telegram_bot_token: telegramTokenInput.value.trim(),
-        telegram_chat_id: telegramChatIdInput.value.trim(),
-        ai_threshold: (aiThresholdRange.value / 100).toString(),
-        cooldown_seconds: cooldownRange.value.toString(),
-        video_clips_enabled: videoClipsEnabled.checked ? 'true' : 'false',
-        retention_days: retentionRange.value.toString(),
-        video_source: selectedSource,
-        rtsp_url: rtspUrlInput.value.trim(),
-        rtsp_transport: rtspTransportSelect.value
-    };
-
-    try {
-        const res = await fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (res.ok) {
-            statRetentionInfo.textContent = `${retentionRange.value} Días`;
-            const wasSourceChanged = currentVideoSource !== selectedSource || currentRtspUrl !== payload.rtsp_url;
-            
-            currentVideoSource = selectedSource;
-            currentRtspUrl = payload.rtsp_url;
-            currentRtspTransport = payload.rtsp_transport;
-
-            if (currentVideoSource === 'rtsp') {
-                sourceBadge.textContent = 'WI-FI RTSP';
-                sourceBadge.className = 'badge bg-dark-subtle text-info font-mono';
+        c.roiEl.addEventListener('pointermove', (e) => {
+            if (!drag) return;
+            const dx = ((e.clientX - drag.sx) / drag.rect.w) * 100;
+            const dy = ((e.clientY - drag.sy) / drag.rect.h) * 100;
+            const s = drag.start;
+            const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+            if (drag.mode === 'move') {
+                c.roiEdit.x = clamp(s.x + dx, 0, 100 - s.width);
+                c.roiEdit.y = clamp(s.y + dy, 0, 100 - s.height);
             } else {
-                sourceBadge.textContent = 'WEBRTC';
-                sourceBadge.className = 'badge bg-dark-subtle text-emerald font-mono';
+                c.roiEdit.width = clamp(s.width + dx, 5, 100 - s.x);
+                c.roiEdit.height = clamp(s.height + dy, 5, 100 - s.y);
             }
+        });
+        const end = () => { drag = null; };
+        c.roiEl.addEventListener('pointerup', end);
+        c.roiEl.addEventListener('pointercancel', end);
+    }
 
-            settingsModal.hide();
-            alert('Ajustes guardados con éxito.');
+    function flashAlert(cameraId, text) {
+        const c = state.cameras.get(cameraId);
+        if (!c) return;
+        const banner = c.tile.querySelector('.tile-alert');
+        banner.querySelector('span').textContent = text;
+        banner.classList.add('show');
+        c.tile.classList.add('alerting');
+        setTimeout(() => { banner.classList.remove('show'); c.tile.classList.remove('alerting'); }, 4000);
+    }
 
-            // Si cambió la fuente y la cámara estaba activa, reiniciar con la nueva fuente
-            if (isStreaming && wasSourceChanged) {
-                stopCamera();
-                startCamera();
+    // ==========================================
+    // WEBSOCKET
+    // ==========================================
+    let ws = null;
+    let wsRetry = 1000;
+    function connectWs() {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${location.host}/ws`);
+        ws.onopen = () => {
+            wsRetry = 1000;
+            $('wsStatus').textContent = 'EN LÍNEA';
+            $('wsIndicator').className = 'pulse-dot active';
+            refreshAll();
+        };
+        ws.onclose = () => {
+            $('wsStatus').textContent = 'RECONECTANDO…';
+            $('wsIndicator').className = 'pulse-dot';
+            setTimeout(async () => {
+                // Si la sesión caducó, ir al login en vez de reintentar sin fin
+                try { await api('GET', '/api/mode'); } catch (_) { return; }
+                connectWs();
+            }, wsRetry);
+            wsRetry = Math.min(wsRetry * 2, 15000);
+        };
+        ws.onmessage = (ev) => {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch (_) { return; }
+            const d = msg.data;
+            switch (msg.type) {
+                case 'DETECTIONS': {
+                    const c = state.cameras.get(d.cameraId);
+                    if (c) { c.dets = d.detections; c.detTs = Date.now(); }
+                    break;
+                }
+                case 'NEW_EVENT':
+                    onNewEvent(d);
+                    break;
+                case 'EVENT_UPDATED':
+                    onEventUpdated(d);
+                    break;
+                case 'EVENT_STARRED':
+                    onEventStarred(d);
+                    break;
+                case 'EVENT_DELETED':
+                    qsa(`.capture-card[data-id="${Number(d.id)}"]`).forEach((n) => n.remove());
+                    loadStats(); loadTimeline();
+                    break;
+                case 'CAMERA_STATUS': {
+                    const c = state.cameras.get(d.id);
+                    if (c) { c.data = { ...c.data, ...d, name: c.data.name }; updateTile(c); }
+                    break;
+                }
+                case 'CAMERAS_CHANGED':
+                    renderCameras(d);
+                    break;
+                case 'MODE':
+                    renderMode(d);
+                    break;
+                case 'SETTINGS_UPDATED':
+                    state.settings = d;
+                    renderStorage();
+                    break;
             }
+        };
+    }
+
+    function onNewEvent(event) {
+        if (state.page === 1 && matchesFilter(event)) {
+            $('captureGallery').querySelector('.gallery-empty')?.remove();
+            $('captureGallery').prepend(createEventCard(event));
         }
-    } catch (e) {
-        alert('Error al guardar ajustes.');
-    }
-});
-
-// Probar conexión con Telegram
-btnTestTelegram.addEventListener('click', async () => {
-    const token = telegramTokenInput.value.trim();
-    const chatId = telegramChatIdInput.value.trim();
-
-    if (!token || !chatId) {
-        telegramTestResult.textContent = 'Ingresa Token y Chat ID';
-        telegramTestResult.className = 'small text-danger';
-        return;
-    }
-
-    telegramTestResult.textContent = 'Enviando prueba...';
-    telegramTestResult.className = 'small text-warning';
-
-    try {
-        const res = await fetch('/api/settings/test-telegram', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token, chatId })
-        });
-        const data = await res.json();
-        if (data.success) {
-            telegramTestResult.textContent = '¡Mensaje recibido!';
-            telegramTestResult.className = 'small text-emerald fw-bold';
-        } else {
-            telegramTestResult.textContent = `Error: ${data.error}`;
-            telegramTestResult.className = 'small text-danger';
+        if (event.event_type !== 'manual') {
+            flashAlert(event.camera_id, `${event.label.toUpperCase()} ${Math.round(event.confidence * 100)}%`);
+            if (event.siren) playSiren();
         }
-    } catch (e) {
-        telegramTestResult.textContent = 'Error de conexión';
-        telegramTestResult.className = 'small text-danger';
-    }
-});
-
-// Probar conexión con Cámara Wi-Fi RTSP
-btnTestRtsp.addEventListener('click', async () => {
-    const url = rtspUrlInput.value.trim();
-    const transport = rtspTransportSelect.value;
-
-    if (!url) {
-        rtspTestResult.textContent = 'Ingresa una URL RTSP';
-        rtspTestResult.className = 'small text-danger';
-        return;
-    }
-
-    rtspTestResult.textContent = 'Probando señal Wi-Fi... (puede tardar 3s)';
-    rtspTestResult.className = 'small text-warning';
-
-    try {
-        const res = await fetch('/api/stream/test-rtsp', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, transport })
-        });
-        const data = await res.json();
-        if (data.success) {
-            rtspTestResult.textContent = '¡Cámara Wi-Fi detectada con éxito!';
-            rtspTestResult.className = 'small text-emerald fw-bold';
-        } else {
-            rtspTestResult.textContent = `${data.error}`;
-            rtspTestResult.className = 'small text-danger';
-        }
-    } catch (e) {
-        rtspTestResult.textContent = 'Error al probar conexión';
-        rtspTestResult.className = 'small text-danger';
-    }
-});
-
-// Purgar grabaciones manualmente
-btnManualCleanup.addEventListener('click', async () => {
-    if (!confirm('¿Deseas purgar ahora las grabaciones que superen los días de retención?')) return;
-    try {
-        const res = await fetch('/api/cleanup', { method: 'POST' });
-        const data = await res.json();
-        alert(`Purga completada: ${data.purgedCount} evento(s) eliminados.`);
         loadStats();
-        loadCapturedEvents();
         loadTimeline();
-    } catch (e) {
-        alert('Error al ejecutar purga.');
     }
-});
 
-function saveRoiSettings() {
-    fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roi_zone: JSON.stringify(activeROI) })
-    }).catch(() => {});
-}
+    function onEventUpdated(event) {
+        const card = document.querySelector(`.capture-card[data-id="${Number(event.id)}"]`);
+        if (card) card.replaceWith(createEventCard(event));
+        if (state.selected && state.selected.id === event.id) {
+            state.selected = event;
+            renderModalMedia(event, !$('videoViewerContainer').classList.contains('d-none'));
+        }
+    }
+
+    function onEventStarred(d) {
+        const btn = document.querySelector(`.star-btn-card[data-id="${Number(d.id)}"]`);
+        if (btn) {
+            btn.classList.toggle('starred', Boolean(d.is_starred));
+            btn.replaceChildren(icon(d.is_starred ? 'star-fill' : 'star'));
+        }
+        if (state.selected && state.selected.id === d.id) {
+            state.selected.is_starred = d.is_starred;
+            renderStar(d.is_starred);
+        }
+    }
+
+    // ==========================================
+    // GALERÍA
+    // ==========================================
+    const GROUPS = { vehicle: ['car', 'truck', 'bus', 'motorcycle', 'bicycle'], animal: ['dog', 'cat', 'bird', 'horse'] };
+    function matchesFilter(ev) {
+        if (state.cameraFilter && String(ev.camera_id) !== state.cameraFilter) return false;
+        if ($('dateFilter').value) return false; // con fecha fijada no se insertan eventos en vivo
+        switch (state.filter) {
+            case 'all': return true;
+            case 'starred': return Boolean(ev.is_starred);
+            case 'vehicle':
+            case 'animal': return GROUPS[state.filter].includes(ev.event_type);
+            default: return ev.event_type === state.filter;
+        }
+    }
+
+    async function loadEvents() {
+        const params = new URLSearchParams({ page: state.page, limit: 12 });
+        if (state.filter === 'starred') params.set('starred', 'true');
+        else if (state.filter !== 'all') params.set('type', state.filter);
+        if ($('dateFilter').value) params.set('date', $('dateFilter').value);
+        if (state.cameraFilter) params.set('camera', state.cameraFilter);
+        try {
+            const data = await api('GET', `/api/events?${params}`);
+            const gallery = $('captureGallery');
+            gallery.replaceChildren();
+            $('galleryCountBadge').textContent = data.total;
+            $('pageIndicator').textContent = `Página ${data.page} / ${data.totalPages}`;
+            $('btnPrevPage').disabled = data.page <= 1;
+            $('btnNextPage').disabled = data.page >= data.totalPages;
+            if (!data.events.length) {
+                gallery.append(el('div', { class: 'gallery-empty text-center py-5 text-secondary' },
+                    icon('inbox', 'display-6 d-block mb-2'),
+                    el('p', { class: 'small mb-0', text: 'No hay eventos para esta selección.' })));
+                return;
+            }
+            data.events.forEach((ev) => gallery.append(createEventCard(ev)));
+        } catch (e) { console.warn(e); }
+    }
+
+    function createEventCard(ev) {
+        const isPerson = ev.event_type === 'person';
+        const thumb = el('img', { class: 'capture-thumb', src: ev.thumb_path || ev.photo_path, alt: '', loading: 'lazy' });
+        const star = el('button', {
+            class: `star-btn-card${ev.is_starred ? ' starred' : ''}`, dataset: { id: ev.id }, title: 'Proteger del borrado automático',
+            'aria-label': 'Proteger',
+            onclick: async (e) => {
+                e.stopPropagation();
+                try { await api('PATCH', `/api/events/${ev.id}/star`); } catch (err) { toast(err.message, 'danger'); }
+            }
+        }, icon(ev.is_starred ? 'star-fill' : 'star'));
+        const card = el('div', { class: 'capture-card', dataset: { id: ev.id }, tabindex: '0', role: 'button' },
+            el('div', { class: 'capture-thumb-box' }, thumb,
+                ev.video_path ? el('span', { class: 'video-indicator-badge' }, icon('play-circle-fill', 'me-1'), 'CLIP') : null),
+            el('div', { class: 'capture-details' },
+                el('span', { class: `capture-event-title ${isPerson ? 'text-emerald' : 'text-cyan'}` },
+                    icon(TYPE_ICONS[ev.event_type] || 'bullseye'),
+                    el('span', { text: ev.label }),
+                    ev.event_type !== 'manual' ? el('span', { class: 'badge bg-dark border border-secondary text-secondary font-mono', text: `${Math.round(ev.confidence * 100)}%` }) : null),
+                el('span', { class: 'capture-time' }, icon('clock', 'me-1'), fmtTime(ev.timestamp)),
+                el('span', { class: 'capture-cam', text: ev.camera_name || `Cámara ${ev.camera_id}` })),
+            star);
+        const open = () => showEvent(ev);
+        card.addEventListener('click', open);
+        card.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+        return card;
+    }
+
+    qsa('[data-filter]').forEach((b) => b.addEventListener('click', () => {
+        qsa('[data-filter]').forEach((x) => x.classList.toggle('active', x === b));
+        state.filter = b.dataset.filter;
+        state.page = 1;
+        loadEvents();
+    }));
+    $('cameraFilter').addEventListener('change', () => { state.cameraFilter = $('cameraFilter').value; state.page = 1; loadEvents(); });
+    $('dateFilter').addEventListener('change', () => { state.page = 1; loadEvents(); });
+    $('clearFilter').addEventListener('click', () => { $('dateFilter').value = ''; state.page = 1; loadEvents(); });
+    $('btnPrevPage').addEventListener('click', () => { if (state.page > 1) { state.page--; loadEvents(); } });
+    $('btnNextPage').addEventListener('click', () => { state.page++; loadEvents(); });
+
+    function renderCameraFilter(list) {
+        const sel = $('cameraFilter');
+        const current = sel.value;
+        sel.replaceChildren(el('option', { value: '', text: 'Todas las cámaras' }),
+            ...list.map((c) => el('option', { value: String(c.id), text: c.name })));
+        sel.value = list.some((c) => String(c.id) === current) ? current : '';
+    }
+
+    // ==========================================
+    // VISOR FORENSE
+    // ==========================================
+    async function showEvent(evIn) {
+        let ev = evIn;
+        if (!ev.photo_path || ev.detections_json === undefined) {
+            try { ev = await api('GET', `/api/events/${evIn.id}`); } catch (e) { return toast(e.message, 'danger'); }
+        }
+        state.selected = ev;
+        $('modalTitle').textContent = `Evento #${ev.id}`;
+        $('modalEventBadge').textContent = ev.label.toUpperCase();
+        $('modalEventBadge').className = ev.event_type === 'person' ? 'badge bg-danger' : 'badge bg-info text-dark';
+        $('modalConfidence').textContent = ev.event_type === 'manual' ? '—' : `${Math.round(ev.confidence * 100)}%`;
+        $('imageTimestamp').textContent = fmtDateTime(ev.timestamp);
+        $('modalCamera').textContent = ev.camera_name || `Cámara ${ev.camera_id}`;
+        renderStar(ev.is_starred);
+        renderModalMedia(ev, false);
+        imageModal.show();
+    }
+
+    function renderModalMedia(ev, showVideo) {
+        const img = $('previewImage');
+        img.onload = () => drawPreviewBoxes(ev);
+        img.src = ev.photo_path;
+        $('btnViewVideo').disabled = ev.event_type === 'manual';
+        const video = $('previewVideo');
+        if (ev.video_path) {
+            if (!video.src.endsWith(ev.video_path)) video.src = ev.video_path;
+            video.classList.remove('d-none');
+            $('clipPending').classList.add('d-none');
+        } else {
+            video.removeAttribute('src');
+            video.classList.add('d-none');
+            $('clipPending').classList.remove('d-none');
+        }
+        setViewer(showVideo);
+    }
+
+    function drawPreviewBoxes(ev) {
+        const img = $('previewImage');
+        const canvas = $('previewCanvas');
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        canvas.style.left = `${img.offsetLeft}px`;
+        canvas.style.top = `${img.offsetTop}px`;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        let dets = [];
+        try { dets = JSON.parse(ev.detections_json || '[]') || []; } catch (_) {}
+        const r = { x: 0, y: 0, w: canvas.width, h: canvas.height };
+        dets.forEach((d) => drawBox(ctx, d, r));
+    }
+
+    function setViewer(video) {
+        $('photoViewerContainer').classList.toggle('d-none', video);
+        $('videoViewerContainer').classList.toggle('d-none', !video);
+        $('btnViewPhoto').classList.toggle('active', !video);
+        $('btnViewVideo').classList.toggle('active', video);
+        const ev = state.selected;
+        const url = video && ev && ev.video_path ? ev.video_path : ev && ev.photo_path;
+        $('downloadLink').href = url || '#';
+        $('downloadLink').setAttribute('download', url ? url.split('/').pop() : '');
+        const v = $('previewVideo');
+        if (video && ev && ev.video_path) v.play().catch(() => {});
+        else v.pause();
+    }
+    $('btnViewPhoto').addEventListener('click', () => setViewer(false));
+    $('btnViewVideo').addEventListener('click', () => setViewer(true));
+    $('imagePreviewModal').addEventListener('hidden.bs.modal', () => { $('previewVideo').pause(); state.selected = null; });
+    $('imagePreviewModal').addEventListener('shown.bs.modal', () => state.selected && drawPreviewBoxes(state.selected));
+
+    function renderStar(on) {
+        $('modalProtectedStatus').textContent = on ? 'PROTEGIDO' : 'NORMAL';
+        $('modalProtectedStatus').className = on ? 'text-warning fw-bold' : 'text-emerald';
+        $('starIcon').className = on ? 'bi bi-star-fill text-warning me-1' : 'bi bi-star me-1';
+        $('starText').textContent = on ? 'Protegido' : 'Proteger';
+    }
+    $('btnModalStar').addEventListener('click', async () => {
+        if (!state.selected) return;
+        try { await api('PATCH', `/api/events/${state.selected.id}/star`); } catch (e) { toast(e.message, 'danger'); }
+    });
+    $('btnModalDelete').addEventListener('click', async () => {
+        if (!state.selected) return;
+        if (!confirm('¿Eliminar definitivamente este evento, su foto y su clip?')) return;
+        try {
+            await api('DELETE', `/api/events/${state.selected.id}`);
+            imageModal.hide();
+            toast('Evento eliminado', 'secondary');
+        } catch (e) { toast(e.message, 'danger'); }
+    });
+
+    // ==========================================
+    // LÍNEA DE TIEMPO
+    // ==========================================
+    function renderTimelineMarkers() {
+        const now = Date.now();
+        const marks = [];
+        for (let i = 6; i >= 0; i--) {
+            const t = new Date(now - i * 4 * 3600 * 1000);
+            marks.push(el('span', { text: i === 0 ? 'Ahora' : t.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', hour12: false }) }));
+        }
+        $('timelineMarkers').replaceChildren(...marks);
+    }
+
+    async function loadTimeline() {
+        try {
+            const events = await api('GET', '/api/timeline');
+            renderTimelineMarkers();
+            const track = $('timelineTrack');
+            track.replaceChildren();
+            $('timelineStats').textContent = `${events.length} evento(s)`;
+            const start = Date.now() - 24 * 3600 * 1000;
+            for (const ev of events) {
+                const pct = Math.max(0, Math.min(100, ((ev.created_at - start) / (24 * 3600 * 1000)) * 100));
+                const pin = el('button', {
+                    class: `timeline-pin ${ev.event_type === 'person' ? '' : 'type-motion'}`,
+                    title: `${ev.label} · ${ev.camera_name || ''} · ${fmtTime(ev.timestamp)}`,
+                    'aria-label': `${ev.label} ${fmtTime(ev.timestamp)}`,
+                    onclick: () => showEvent(ev)
+                });
+                pin.style.left = `${pct}%`;
+                track.append(pin);
+            }
+        } catch (e) { console.warn(e); }
+    }
+
+    // ==========================================
+    // AJUSTES
+    // ==========================================
+    async function loadSettings() {
+        state.settings = await api('GET', '/api/settings');
+        renderStorage();
+    }
+
+    function fillSettings() {
+        const s = state.settings;
+        qsa('[data-setting]').forEach((input) => {
+            const v = s[input.dataset.setting];
+            if (v === undefined) return;
+            if (input.type === 'checkbox') input.checked = v === 'true';
+            else if (input.dataset.scale) input.value = Math.round(parseFloat(v) * parseFloat(input.dataset.scale));
+            else input.value = v;
+            updateRangeLabel(input);
+        });
+        $('telegramToken').value = '';
+        $('telegramToken').placeholder = s.telegram_bot_token_set ? '•••••••• (guardado; escribe uno nuevo para cambiarlo)' : '123456789:ABCdef…';
+        $('telegramTokenHint').textContent = s.telegram_bot_token_set ? 'Token guardado en el servidor. Por seguridad no se muestra.' : '';
+        const groups = (s.detect_classes || '').split(',');
+        qsa('.class-group').forEach((cb) => { cb.checked = groups.includes(cb.value); });
+        let rules = [];
+        try { rules = JSON.parse(s.schedule_json || '[]'); } catch (_) {}
+        renderRules(rules);
+        $('settingsError').textContent = '';
+    }
+
+    function updateRangeLabel(input) {
+        const label = document.querySelector(`[data-label-for="${input.id}"]`);
+        if (label) label.textContent = `${input.value}${input.dataset.suffix || ''}`;
+    }
+    qsa('input[type="range"][data-setting]').forEach((r) => r.addEventListener('input', () => updateRangeLabel(r)));
+
+    function collectSettings() {
+        const out = {};
+        qsa('[data-setting]').forEach((input) => {
+            const k = input.dataset.setting;
+            if (input.type === 'checkbox') out[k] = input.checked ? 'true' : 'false';
+            else if (input.dataset.scale) out[k] = String(parseFloat(input.value) / parseFloat(input.dataset.scale));
+            else out[k] = String(input.value).trim();
+        });
+        const token = $('telegramToken').value.trim();
+        if (token) out.telegram_bot_token = token;
+        out.detect_classes = qsa('.class-group').filter((c) => c.checked).map((c) => c.value).join(',');
+        out.schedule_json = JSON.stringify(collectRules());
+        return out;
+    }
+
+    $('btnSaveSettings').addEventListener('click', async () => {
+        $('settingsError').textContent = '';
+        try {
+            const r = await api('POST', '/api/settings', collectSettings());
+            state.settings = r.settings;
+            fillSettings();
+            renderStorage();
+            toast('Ajustes guardados', 'success');
+        } catch (e) {
+            $('settingsError').textContent = e.message;
+        }
+    });
+
+    function openSettings(tab) {
+        fillSettings();
+        hideCameraForm();
+        loadStorage();
+        settingsModal.show();
+        if (tab) bootstrap.Tab.getOrCreateInstance(document.querySelector(`[data-bs-target="#${tab}"]`)).show();
+    }
+    $('btnOpenSettings').addEventListener('click', () => openSettings());
+    $('btnAddFirstCamera').addEventListener('click', () => { openSettings('tabCameras'); showCameraForm(null); });
+
+    $('btnTestTelegram').addEventListener('click', async () => {
+        const out = $('telegramTestResult');
+        out.textContent = 'Enviando…';
+        out.className = 'small text-warning';
+        try {
+            const r = await api('POST', '/api/settings/test-telegram', { token: $('telegramToken').value.trim(), chatId: $('telegramChatId').value.trim() });
+            out.textContent = r.success ? '¡Mensaje enviado!' : `Error: ${r.error}`;
+            out.className = r.success ? 'small text-emerald fw-bold' : 'small text-danger';
+        } catch (e) {
+            out.textContent = e.message;
+            out.className = 'small text-danger';
+        }
+    });
+
+    $('btnManualCleanup').addEventListener('click', async () => {
+        if (!confirm('¿Aplicar ahora la retención (días y espacio máximo)? Los eventos protegidos se conservan.')) return;
+        try {
+            const r = await api('POST', '/api/cleanup');
+            toast(`Purga: ${r.byAge + r.bySize} evento(s), ${r.orphans} archivo(s) huérfano(s), ${r.freedMb} MB liberados`, 'success');
+            loadEvents(); loadStats(); loadTimeline(); loadStorage();
+        } catch (e) { toast(e.message, 'danger'); }
+    });
+
+    $('passwordForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const out = $('pwResult');
+        try {
+            await api('POST', '/api/auth/password', { current: $('pwCurrent').value, next: $('pwNext').value });
+            out.textContent = 'Contraseña cambiada';
+            out.className = 'small ms-2 text-emerald';
+            e.target.reset();
+        } catch (err) {
+            out.textContent = err.message;
+            out.className = 'small ms-2 text-danger';
+        }
+    });
+
+    // ---------- Horario ----------
+    const DAY_NAMES = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+    function ruleRow(rule = { days: [1, 2, 3, 4, 5], start: '22:00', end: '06:00', mode: 'armed' }) {
+        const days = el('div', { class: 'btn-group btn-group-sm rule-days', role: 'group' },
+            ...DAY_NAMES.map((n, i) => el('button', {
+                type: 'button', class: `btn btn-filter${rule.days.includes(i) ? ' active' : ''}`, dataset: { day: i }, text: n,
+                onclick: (e) => e.currentTarget.classList.toggle('active')
+            })));
+        const mode = el('select', { class: 'form-select form-select-sm bg-dark border-secondary text-white rule-mode', 'aria-label': 'Modo' },
+            ...Object.entries({ armed: 'Armado', home: 'En casa', disarmed: 'Desarmado' }).map(([v, t]) => el('option', { value: v, text: t, selected: v === rule.mode })));
+        return el('div', { class: 'rule-row d-flex flex-wrap align-items-center gap-2 p-2 rounded border border-secondary' },
+            days,
+            el('input', { type: 'time', class: 'form-control form-control-sm bg-dark border-secondary text-white rule-start', value: rule.start, 'aria-label': 'Desde' }),
+            el('span', { class: 'small text-secondary', text: 'a' }),
+            el('input', { type: 'time', class: 'form-control form-control-sm bg-dark border-secondary text-white rule-end', value: rule.end, 'aria-label': 'Hasta' }),
+            mode,
+            el('button', { type: 'button', class: 'btn btn-sm btn-outline-danger ms-auto', title: 'Quitar', 'aria-label': 'Quitar franja', onclick: (e) => e.currentTarget.closest('.rule-row').remove() }, icon('x-lg')));
+    }
+    function renderRules(rules) { $('scheduleRules').replaceChildren(...rules.map(ruleRow)); }
+    function collectRules() {
+        return qsa('.rule-row').map((row) => ({
+            days: qsa('[data-day].active', row).map((b) => parseInt(b.dataset.day, 10)),
+            start: row.querySelector('.rule-start').value,
+            end: row.querySelector('.rule-end').value,
+            mode: row.querySelector('.rule-mode').value
+        }));
+    }
+    $('btnAddRule').addEventListener('click', () => $('scheduleRules').append(ruleRow()));
+
+    // ---------- Cámaras ----------
+    function renderCameraList(list) {
+        const box = $('cameraList');
+        box.replaceChildren(...list.map((cam) => {
+            const dot = cam.enabled ? (cam.status === 'online' ? 'text-emerald' : cam.status === 'starting' ? 'text-warning' : 'text-danger') : 'text-secondary';
+            const toggle = el('input', {
+                class: 'form-check-input', type: 'checkbox', role: 'switch', checked: cam.enabled, 'aria-label': 'Activa',
+                onchange: async (e) => {
+                    try { await api('PATCH', `/api/cameras/${cam.id}`, { enabled: e.target.checked }); }
+                    catch (err) { toast(err.message, 'danger'); e.target.checked = !e.target.checked; }
+                }
+            });
+            return el('div', { class: 'camera-row d-flex align-items-center gap-2 p-2 rounded border border-secondary' },
+                icon('circle-fill', `${dot} small`),
+                icon(cam.type === 'rtsp' ? 'wifi' : 'webcam', 'text-secondary'),
+                el('div', { class: 'flex-grow-1 min-w-0' },
+                    el('div', { class: 'small fw-semibold text-truncate', text: cam.name }),
+                    el('div', { class: 'small text-secondary font-mono text-truncate', text: cam.source })),
+                el('div', { class: 'form-check form-switch mb-0' }, toggle),
+                el('button', { class: 'btn btn-sm btn-outline-secondary', title: 'Editar', 'aria-label': 'Editar', onclick: () => showCameraForm(cam) }, icon('pencil')),
+                el('button', {
+                    class: 'btn btn-sm btn-outline-danger', title: 'Eliminar', 'aria-label': 'Eliminar',
+                    onclick: async () => {
+                        if (!confirm(`¿Eliminar la cámara "${cam.name}"? Sus eventos ya grabados se conservan.`)) return;
+                        try { await api('DELETE', `/api/cameras/${cam.id}`); } catch (e) { toast(e.message, 'danger'); }
+                    }
+                }, icon('trash3')));
+        }));
+    }
+
+    function camTypeSelected() { return $('camTypeRtsp').checked ? 'rtsp' : 'dshow'; }
+    function renderCamType() {
+        const rtsp = camTypeSelected() === 'rtsp';
+        $('rtspSection').classList.toggle('d-none', !rtsp);
+        $('dshowSection').classList.toggle('d-none', rtsp);
+    }
+    $('camTypeDshow').addEventListener('change', renderCamType);
+    $('camTypeRtsp').addEventListener('change', renderCamType);
+
+    async function loadDevices(selected) {
+        const sel = $('camDevice');
+        sel.replaceChildren(el('option', { value: '', text: 'Buscando…' }));
+        try {
+            const { devices } = await api('GET', '/api/system/devices');
+            sel.replaceChildren(...(devices.length ? devices.map((d) => el('option', { value: d, text: d, selected: d === selected }))
+                : [el('option', { value: '', text: 'No se encontraron webcams' })]));
+        } catch (e) {
+            sel.replaceChildren(el('option', { value: '', text: e.message }));
+        }
+    }
+    $('btnRefreshDevices').addEventListener('click', () => loadDevices($('camDevice').value));
+
+    function showCameraForm(cam) {
+        $('cameraForm').classList.remove('d-none');
+        $('btnNewCamera').classList.add('d-none');
+        $('cameraFormError').textContent = '';
+        $('rtspTestResult').textContent = '';
+        $('camId').value = cam ? cam.id : '';
+        $('cameraFormTitle').textContent = cam ? `Editar: ${cam.name}` : 'Nueva cámara';
+        $('camName').value = cam ? cam.name : '';
+        (cam && cam.type === 'rtsp' ? $('camTypeRtsp') : $('camTypeDshow')).checked = true;
+        $('camUrl').value = cam && cam.type === 'rtsp' ? cam.source : '';
+        $('camTransport').value = cam ? cam.transport : 'tcp';
+        $('camEnabled').checked = cam ? cam.enabled : true;
+        renderCamType();
+        loadDevices(cam && cam.type === 'dshow' ? cam.source : null);
+        $('camName').focus();
+    }
+    function hideCameraForm() {
+        $('cameraForm').classList.add('d-none');
+        $('btnNewCamera').classList.remove('d-none');
+    }
+    $('btnNewCamera').addEventListener('click', () => showCameraForm(null));
+    $('btnCancelCamera').addEventListener('click', hideCameraForm);
+
+    $('cameraForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const id = $('camId').value;
+        const type = camTypeSelected();
+        const body = {
+            name: $('camName').value.trim(),
+            type,
+            source: type === 'rtsp' ? $('camUrl').value.trim() : $('camDevice').value,
+            transport: $('camTransport').value,
+            enabled: $('camEnabled').checked
+        };
+        try {
+            if (id) await api('PATCH', `/api/cameras/${id}`, body);
+            else await api('POST', '/api/cameras', body);
+            hideCameraForm();
+            toast('Cámara guardada', 'success');
+        } catch (err) {
+            $('cameraFormError').textContent = err.message;
+        }
+    });
+
+    $('btnTestRtsp').addEventListener('click', async () => {
+        const out = $('rtspTestResult');
+        out.textContent = 'Probando… (hasta 8 s)';
+        out.className = 'small text-warning';
+        try {
+            const r = await api('POST', '/api/cameras/test-rtsp', { url: $('camUrl').value.trim(), transport: $('camTransport').value, cameraId: $('camId').value || undefined });
+            out.textContent = r.success ? r.message : r.error;
+            out.className = r.success ? 'small text-emerald fw-bold' : 'small text-danger';
+        } catch (err) {
+            out.textContent = err.message;
+            out.className = 'small text-danger';
+        }
+    });
+
+    // ==========================================
+    // ARRANQUE
+    // ==========================================
+    async function refreshAll() {
+        await Promise.allSettled([loadCameras(), loadStats(), loadEvents(), loadTimeline()]);
+    }
+
+    (async function init() {
+        setLayout(state.layout);
+        renderQuality();
+        renderSound();
+        renderTimelineMarkers();
+        try {
+            await loadSettings();
+        } catch (_) { return; }
+        await refreshAll();
+        loadStorage();
+        connectWs();
+        setInterval(loadStats, 60000);
+        setInterval(loadStorage, 5 * 60000);
+    })();
+})();
